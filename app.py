@@ -3,143 +3,133 @@ from twilio.twiml.messaging_response import MessagingResponse
 import requests
 import os
 import logging
+import re
+from dateutil import parser as dateparser
+from urllib.parse import urlencode
 
 # ----------------------------------------
-#  ضبط مستوى تسجيل الـ logs لرؤية المخرجات أثناء التطوير
+# Setup
 # ----------------------------------------
 logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 
-# ----------------------------------------
-# 1. الإعداد: مفتاح Together AI ونقطة النهاية المعدَّلة
-# ----------------------------------------
-# تأكدي من تعيين المفتاح كمتغيّر بيئي باسم TOGETHER_AI_API_KEY
+# In-memory session store (for demo; use Redis or a database in production)
+sessions = {}
 
-TOGETHER_AI_MODEL = "Qwen/Qwen2.5-72B-Instruct-Turbo"
+# Your Streamlit form base URL
+STREAMLIT_BASE_URL = "https://your-streamlit-app-url/user_form"
 
-# نقطة النهاية الصحيحة لإنشاء محادثة completion
-TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
+# Predefined destinations
+DESTINATIONS = ["تركيا", "السعودية", "كابادوكيا", "الإمارات"]
 
-api_key = os.getenv("TOGETHER_AI_API_KEY")
+# Room types
+ROOM_TYPES = ["فردية", "مزدوجة", "ثلاثية"]
 
-# ----------------------------------------
-# 2. دالة مساعدة للاتصال بـ Together AI بتنسيق Chat Completion
-# ----------------------------------------
-def generate_with_together(prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
-    """
-    ترسل طلبًا إلى Together AI للحصول على رد بناءً على الـ prompt.
-    تستخدم تنسيق Chat Completion (model + messages).
-    تعيد النص الذي يولّده Together AI أو رسالة خطأ مبسطة في حال الفشل.
-    """
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "accept": "application/json"
-    }
+# Helper functions
+def extract_destination(text):
+    for dest in DESTINATIONS:
+        if dest in text:
+            return dest
+    return None
 
-    # تنسيق الطلب المطلوب
-    payload = {
-        "model": TOGETHER_AI_MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "context_length_exceeded_behavior": "error"
-    }
-
-    response = requests.post(TOGETHER_API_URL, json=payload, headers=headers, timeout=30)
-    if response.status_code != 200:
-        logging.error(f"Together AI returned status {response.status_code}: {response.text}")
-        return "عذراً، حدث خطأ أثناء محاولة إنشاء الرد الذكي، حاول مجدداً لاحقًا."
-
-    data = response.json()
-    # في تنسيق Chat Completion، الرد الفعلي يكون في choices[0]["message"]["content"]
+def extract_date(text):
+    # attempt to find a date in DD/MM/YYYY or YYYY-MM-DD or natural language
+    # first try explicit patterns
+    m = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', text)
+    if m:
+        try:
+            return dateparser.parse(m.group(1), dayfirst=True).date().isoformat()
+        except:
+            pass
+    # fallback to dateparser
     try:
-        generated_text = data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logging.error(f"Error parsing Together AI response: {e} | Response Body: {data}")
-        return "عذراً، تعذّر فهم ردّ الذكاء الاصطناعي."
-    return generated_text.strip()
+        dt = dateparser.parse(text, fuzzy=True)
+        if dt:
+            return dt.date().isoformat()
+    except:
+        pass
+    return None
+
+def extract_integer(text):
+    m = re.search(r'\b(\d+)\b', text)
+    return int(m.group(1)) if m else None
+
+def extract_room_type(text):
+    for rt in ROOM_TYPES:
+        if rt in text:
+            return rt
+    return None
 
 # ----------------------------------------
-# 3. بيانات مثال بسيطة (يمكن ربطها بقاعدة بيانات لاحقًا)
-# ----------------------------------------
-travel_packages = {
-    "تركيا": [
-        {"مدينة": "إسطنبول", "سعر": "500$", "نشاط": "جولة في البوسفور", "نوع الغرف": "مزدوجة", "عدد الأشخاص": 2},
-        {"مدينة": "أنطاليا", "سعر": "400$", "نشاط": "زيارة الشلالات", "نوع الغرف": "فردية", "عدد الأشخاص": 1},
-    ],
-    "السعودية": [
-        {"مدينة": "مكة", "سعر": "600$", "نشاط": "رحلة حج", "نوع الغرف": "ثلاثية", "عدد الأشخاص": 3},
-        {"مدينة": "المدينة", "سعر": "550$", "نشاط": "زيارة المسجد النبوي", "نوع الغرف": "مزدوجة", "عدد الأشخاص": 2},
-    ],
-    "كابادوكيا": [
-        {"مدينة": "كابادوكيا", "سعر": "450$", "نشاط": "ركوب المناطيد", "نوع الغرف": "مزدوجة", "عدد الأشخاص": 2},
-        {"مدينة": "بورصة", "سعر": "350$", "نشاط": "زيارة جبل أولوداغ", "نوع الغرف": "فردية", "عدد الأشخاص": 1}
-    ],
-    "الإمارات": [
-        {"مدينة": "دبي", "سعر": "700$", "نشاط": "زيارة برج خليفة", "نوع الغرف": "مزدوجة", "عدد الأشخاص": 2},
-        {"مدينة": "أبوظبي", "سعر": "650$", "نشاط": "جولة في متحف اللوفر", "نوع الغرف": "فردية", "عدد الأشخاص": 1}
-    ]
-}
-
-# ----------------------------------------
-# 4. نقطة النهاية لاستقبال رسائل WhatsApp من Twilio
+# WhatsApp webhook endpoint
 # ----------------------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    # 4.1. استلام نص الرسالة الواردة من Twilio
-    incoming = request.values.get("Body", "").strip()
-    lower = incoming.lower()
-    logging.info(f"Incoming message: {incoming}")
+    from_number = request.values.get("From")
+    incoming = request.values.get("Body", "").strip().lower()
+    logging.info(f"{from_number} → {incoming}")
 
-    # 4.2. نهيئ Response لـ Twilio
+    # get or create session
+    user_sess = sessions.setdefault(from_number, {})
+
     resp = MessagingResponse()
     msg = resp.message()
 
-    # 4.3. الردود السريعة بناءً على كلمات مفتاحية بسيطة
-    greetings = ["مرحبا", "سلام", "أهلا", "hello", "hi"]
-    if any(word in lower for word in greetings):
-        msg.body("أهلاً! كيف يمكنني مساعدتك اليوم؟ يمكنك السؤال عن باقات السفر أو عن تفاصيل الوجهات.")
+    # step 1: destination
+    if "destination" not in user_sess:
+        dest = extract_destination(incoming)
+        if dest:
+            user_sess["destination"] = dest
+            msg.body(f"أين تود السفر؟ لقد اخترت {dest}. متى تريد الانطلاق؟ (مثلاً 25/06/2025)")
+        else:
+            msg.body("إلى أي وجهة تريد السفر؟ (مثلاً تركيا، السعودية، كابادوكيا، الإمارات)")
         return str(resp)
 
-    if "باقات" in lower:
-        msg.body("لدينا باقات سفر إلى: تركيا، السعودية، كابادوكيا، الإمارات. لأيّ وجهة تريد التفاصيل؟")
+    # step 2: date
+    if "date" not in user_sess:
+        travel_date = extract_date(incoming)
+        if travel_date:
+            user_sess["date"] = travel_date
+            msg.body(f"حسناً، تاريخ السفر: {travel_date}. كم عدد المسافرين؟")
+        else:
+            msg.body("ليس واضحًا. من فضلك ادخل تاريخ السفر (مثلاً 25/06/2025 أو غدًا).")
         return str(resp)
 
-    for country in travel_packages:
-        if country in lower:
-            pkgs = travel_packages[country]
-            text = f"باقات السفر إلى {country}:\n"
-            for p in pkgs:
-                text += (
-                    f"- مدينة: {p['مدينة']}, سعر: {p['سعر']}, "
-                    f"نشاط: {p['نشاط']}, غرف: {p['نوع الغرف']}, "
-                    f"أشخاص: {p['عدد الأشخاص']}\n"
-                )
-            msg.body(text)
-            return str(resp)
+    # step 3: passengers
+    if "passengers" not in user_sess:
+        num = extract_integer(incoming)
+        if num:
+            user_sess["passengers"] = num
+            msg.body(f"عدد المسافرين: {num}. ما نوع الغرف التي تريدها؟ (فردية، مزدوجة، ثلاثية)")
+        else:
+            msg.body("كم عدد المسافرين معك؟ ارسل رقمًا مثال: 3")
+        return str(resp)
 
-    # 4.4. إذا لم تنطبق أي ردود سريعة، ننتقل إلى Together AI لتوليد الرد الذكي
-    prompt = (
-        f"أنت مساعد حجز متقدم لوكالة سفر. المستخدم كتب: \"{incoming}\". "
-        "أجب بصيغة عربية مبسطة وواضحة، وإذا سأله عن باقات قدم له معلومات، "
-        "وإذا كان طلبه عامًّا يمكنك طلب توضيح أكثر."
-    )
+    # step 4: room type
+    if "room_type" not in user_sess:
+        rt = extract_room_type(incoming)
+        if rt:
+            user_sess["room_type"] = rt
+            # all slots collected → generate form link
+            params = {
+                "destination": user_sess["destination"],
+                "date": user_sess["date"],
+                "passengers": user_sess["passengers"],
+                "room_type": user_sess["room_type"]
+            }
+            form_url = f"{STREAMLIT_BASE_URL}?{urlencode(params)}"
+            msg.body(
+                f"عظيم! لإكمال بياناتك، استخدم هذا الرابط:\n{form_url}\n"
+                "بعد الإرسال، سأخبر الوكالة لإتمام الحجز."
+            )
+        else:
+            msg.body("ما نوع الغرف؟ اختر من: فردية، مزدوجة، ثلاثية")
+        return str(resp)
 
-    try:
-        ai_reply = generate_with_together(prompt, max_tokens=256, temperature=0.7)
-    except Exception as e:
-        logging.error(f"Error calling Together AI: {e}")
-        ai_reply = "عذراً، حدثت مشكلة أثناء الاتصال بخدمة الذكاء الاصطناعي. حاولِ مجددًا لاحقًا."
-
-    msg.body(ai_reply)
+    # fallback — should not reach here
+    msg.body("عذراً، حدث خطأ. لنبدأ مجددًا: إلى أي وجهة تريد السفر؟")
+    sessions.pop(from_number, None)
     return str(resp)
 
-# ----------------------------------------
-# 5. نقطة البداية لتشغيل Flask
-# ----------------------------------------
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
