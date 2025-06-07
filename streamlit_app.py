@@ -1,10 +1,10 @@
+# user_form.py
 import streamlit as st
-import pandas as pd
 
 # Title of the app
 st.title("Travel Booking System")
 
-# Section to collect user information
+# Section for end users
 st.header("User Information")
 
 # Collecting user details
@@ -19,21 +19,4 @@ passport_images = st.file_uploader("Upload Passport Images", accept_multiple_fil
 if st.button("Submit"):
     st.success("Information submitted successfully!")
 
-# Section for dashboard
-st.header("Booking Dashboard")
-
-# Example data for dashboard
-booking_data = {
-    "Destination": ["Turkey", "Saudi Arabia"],
-    "Bookings via AI": [10, 5],
-    "Direct Bookings": [7, 8]
-}
-
-# Create a DataFrame
-booking_df = pd.DataFrame(booking_data)
-
-# Display the data as a table
-st.table(booking_df)
-
-# Display a bar chart
-st.bar_chart(booking_df.set_index("Destination")) 
+# business_dashboard.py
